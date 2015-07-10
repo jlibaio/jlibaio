@@ -16,6 +16,18 @@
 #include <pthread.h>
 #include <stdio.h>
 #include <time.h>
+#include <sys/time.h>
+
+
+// Used to measure intervals and absolute times
+typedef int64_t msec_t;
+
+msec_t time_ms(void)
+{
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (msec_t)tv.tv_sec * 1000 + tv.tv_usec / 1000;
+}
 
 void internalWrite(int fd, long position, int size, void * buffer)
 {
@@ -51,9 +63,9 @@ char * newBuffer(int size, char fillChar)
     return charBuffer;
 }
 
-void preAlloc(int fd, int blocks, int useFallocate)
+void preAlloc(int fd, int blocks, int type)
 {
-    if (useFallocate)
+    if (type == 0)
     {
        fprintf (stderr, "using fallocate..");
        if (fallocate(fd, FALLOC_FL_ZERO_RANGE, 0, (off_t) (blocks * 512)))
@@ -63,11 +75,34 @@ void preAlloc(int fd, int blocks, int useFallocate)
        }
        fprintf (stderr, "...done\n");
     }
-    else
+    else if (type == 1)
     {
-       fprintf (stderr, "Writing to allocate...");
+       fprintf (stderr, "Writing to allocate with a single big chunk only ...");
+        // it will write a single big block 
         char * charBuffer = newBuffer(512 * blocks, 'a');
         internalWrite(fd, 0, blocks * 512, charBuffer);
+
+        if (fsync(fd) < 0)
+        {
+            fprintf (stderr, "Could not fsync\n");
+            exit(-1);
+        }
+
+        lseek (fd, 0, SEEK_SET);
+
+        free(charBuffer);
+       fprintf (stderr, "...done\n");
+    }
+    else if (type == 2)
+    {
+        // it will write multiple small blocks
+       fprintf (stderr, "Writing to allocate with %d small chunks of 512 bytes ...", blocks);
+        char * charBuffer = newBuffer(512, 'a');
+        int i;
+        for (i = 0; i < blocks; i++)
+        {
+           internalWrite(fd, i * 512, 512, charBuffer);
+        }
 
         if (fsync(fd) < 0)
         {
@@ -96,7 +131,8 @@ void loopMethod(int fd, int maxIO, int blocks)
 
     fprintf (stderr, "writing...");
     char * buffer = newBuffer(512, 'd');
-    clock_t start = clock();
+    msec_t start = time_ms();
+    clock_t startClock = clock();
     for (i = 0; i < blocks; i++)
     {
         struct iocb * iocb = (struct iocb *)malloc(sizeof(struct iocb));
@@ -113,57 +149,52 @@ void loopMethod(int fd, int maxIO, int blocks)
 
     res = io_getevents(libaioContext, blocks, blocks, events, 0);
 
+    msec_t end = time_ms();
+    clock_t endClock = clock();
+
     for (i = 0; i < res; i++)
     {
        free (events[i].obj);
     }
 
-    clock_t end = clock();
 
     free(events);
 
-    long clocks = (end - start);
+    msec_t milliseconds = (end - start);
+    clock_t clocks = (endClock - startClock);
 
-    fprintf (stderr, "...done in %ld clocks\n", clocks);
+    fprintf (stderr, "...done in %ld clocks, %ld milliseconds\n", clocks, milliseconds);
 }
 
 int main(int argc, char *argv[])
 {
-    if (argc != 3)
+    if (argc != 4)
     {
-        fprintf (stderr, "usage: libtest regular-file fallocated-file\n");
+        fprintf (stderr, "usage: libtest file1 file2 file3\n");
         exit(-1);
     }
 
     int NUMBER_OF_BLOCKS = 10000;
     int QUEUE_SIZE = 20000;
 
-    fprintf (stderr, "Opening %s\n", argv[1]);
 
-    int fd = open(argv[1], O_RDWR | O_CREAT | O_DIRECT, 0666);
-    if (fd < 0)
+    int i;
+
+    for (i = 0; i < 3; i++)
     {
-       fprintf (stderr, "Could not open file %s", argv[1]);
-       exit(-1);
+       fprintf (stderr, "=================================== test %d\n", i);
+       char * file = argv[i + 1];
+       fprintf (stderr, "Opening file %s for test %d\n", file, i);
+       int fd = open(file, O_RDWR | O_CREAT | O_DIRECT, 0666);
+       if (fd < 0)
+       {
+          fprintf (stderr, "Could not open file %s", argv[1]);
+          exit(-1);
+       }
+       preAlloc(fd, NUMBER_OF_BLOCKS, i);
+       loopMethod(fd, QUEUE_SIZE, NUMBER_OF_BLOCKS);
+       close(fd);
     }
-
-    preAlloc(fd, NUMBER_OF_BLOCKS, 0);
-    loopMethod(fd, QUEUE_SIZE, NUMBER_OF_BLOCKS);
-    close(fd);
-
-    fprintf (stderr, "Opening %s\n", argv[2]);
-
-    fd = open(argv[2], O_RDWR | O_CREAT | O_DIRECT, 0666);
-    if (fd < 0)
-    {
-       fprintf (stderr, "Could not open file %s", argv[2]);
-       exit(-1);
-    }
-
-    preAlloc(fd, NUMBER_OF_BLOCKS, 1);
-    loopMethod(fd, QUEUE_SIZE, NUMBER_OF_BLOCKS);
-    close(fd);
-
 
     return 0;
 }
