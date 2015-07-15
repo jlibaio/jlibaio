@@ -7,6 +7,6 @@ SET(${PROJECT_NAME}_PATCH_LEVEL 0)
 
 ADD_DEFINITIONS("-O3 -Wall")
 
-ADD_EXECUTABLE(perftest perftestlibaio.c)
+ADD_EXECUTABLE(perftest perftest.c)
 
 target_link_libraries(perftest aio)
