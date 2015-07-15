@@ -5,6 +5,7 @@
 
 //#define DEBUG
 
+//#include <stdlib.h>
 #include <unistd.h>
 #include <errno.h>
 #include <libaio.h>
@@ -45,11 +46,12 @@ void internalWrite(int fd, long position, int size, void * buffer)
 
 }
 
-char * newBuffer(int size, char fillChar)
+char * newBuffer(int blockSize, int size, char fillChar)
 {
+    fprintf (stdout, "allocating blockSize = %d, size=%d\n", blockSize, size);
     void * buffer;
     int i;
-    int result = posix_memalign(&buffer, (size_t)512, (size_t)size);
+    int result = posix_memalign(&buffer, (size_t)blockSize, (size_t)size);
     if (result != 0)
     {
        fprintf (stderr, "Can't allocate memory\n");
@@ -63,12 +65,13 @@ char * newBuffer(int size, char fillChar)
     return charBuffer;
 }
 
-void preAlloc(int fd, int blocks, int type)
+void preAlloc(int fd, int blockSize, int blocks, int type)
 {
+    fprintf (stderr, "preAlloc blockSize = %d, blocks = %d\n", blockSize, blocks);
     if (type == 0)
     {
        fprintf (stderr, "using fallocate..");
-       if (fallocate(fd, FALLOC_FL_ZERO_RANGE, 0, (off_t) (blocks * 512)))
+       if (fallocate(fd, FALLOC_FL_ZERO_RANGE, 0, (off_t) (blocks * blockSize)))
        {
            fprintf (stderr, "Can't use fallocate\n");
            exit(-1);
@@ -77,10 +80,10 @@ void preAlloc(int fd, int blocks, int type)
     }
     else if (type == 1)
     {
-       fprintf (stderr, "Writing to allocate with a single big chunk only ...");
+       fprintf (stdout, "Writing to allocate with a single big chunk only ...");
         // it will write a single big block 
-        char * charBuffer = newBuffer(512 * blocks, 'a');
-        internalWrite(fd, 0, blocks * 512, charBuffer);
+        char * charBuffer = newBuffer(blockSize, blockSize * blocks, 'a');
+        internalWrite(fd, 0, blocks * blockSize, charBuffer);
 
         if (fsync(fd) < 0)
         {
@@ -91,17 +94,17 @@ void preAlloc(int fd, int blocks, int type)
         lseek (fd, 0, SEEK_SET);
 
         free(charBuffer);
-       fprintf (stderr, "...done\n");
+       fprintf (stdout, "...done\n");
     }
     else if (type == 2)
     {
         // it will write multiple small blocks
-       fprintf (stderr, "Writing to allocate with %d small chunks of 512 bytes ...", blocks);
-        char * charBuffer = newBuffer(512, 'a');
+       fprintf (stdout, "Writing to allocate with %d small chunks of 512 bytes ...", blocks);
+        char * charBuffer = newBuffer(blockSize, blockSize, 'a');
         int i;
         for (i = 0; i < blocks; i++)
         {
-           internalWrite(fd, i * 512, 512, charBuffer);
+           internalWrite(fd, i * blockSize, blockSize, charBuffer);
         }
 
         if (fsync(fd) < 0)
@@ -113,11 +116,11 @@ void preAlloc(int fd, int blocks, int type)
         lseek (fd, 0, SEEK_SET);
 
         free(charBuffer);
-       fprintf (stderr, "...done\n");
+       fprintf (stdout, "...done\n");
     }
 }
 
-void loopMethod(int fd, int maxIO, int blocks)
+void loopMethod(int fd, int blockSize, int maxIO, int blocks)
 {
     io_context_t libaioContext;
     int res = io_queue_init(maxIO, &libaioContext);
@@ -130,13 +133,13 @@ void loopMethod(int fd, int maxIO, int blocks)
     int i;
 
     fprintf (stderr, "writing...");
-    char * buffer = newBuffer(512, 'd');
+    char * buffer = newBuffer(blockSize, blockSize, 'd');
     msec_t start = time_ms();
     clock_t startClock = clock();
     for (i = 0; i < blocks; i++)
     {
         struct iocb * iocb = (struct iocb *)malloc(sizeof(struct iocb));
-        io_prep_pwrite(iocb, fd, buffer, (size_t)512, i * 512);
+        io_prep_pwrite(iocb, fd, buffer, (size_t)blockSize, i * blockSize);
         int result = io_submit(libaioContext, 1, &iocb);
         if (result < 0)
         {
@@ -168,11 +171,14 @@ void loopMethod(int fd, int maxIO, int blocks)
 
 int main(int argc, char *argv[])
 {
-    if (argc != 4)
+    if (argc != 5)
     {
-        fprintf (stderr, "usage: libtest file1 file2 file3\n");
+        fprintf (stderr, "usage: libtest blocksize file1 file2 file3\n");
         exit(-1);
     }
+
+    int blockSize = atoi(argv[1]);
+    fprintf (stdout, "using blockSize %d\n", blockSize);
 
     int NUMBER_OF_BLOCKS = 10000;
     int QUEUE_SIZE = 20000;
@@ -183,7 +189,7 @@ int main(int argc, char *argv[])
     for (i = 0; i < 3; i++)
     {
        fprintf (stderr, "=================================== test %d\n", i);
-       char * file = argv[i + 1];
+       char * file = argv[i + 2];
        fprintf (stderr, "Opening file %s for test %d\n", file, i);
        int fd = open(file, O_RDWR | O_CREAT | O_DIRECT, 0666);
        if (fd < 0)
@@ -191,8 +197,8 @@ int main(int argc, char *argv[])
           fprintf (stderr, "Could not open file %s", argv[1]);
           exit(-1);
        }
-       preAlloc(fd, NUMBER_OF_BLOCKS, i);
-       loopMethod(fd, QUEUE_SIZE, NUMBER_OF_BLOCKS);
+       preAlloc(fd, blockSize, NUMBER_OF_BLOCKS, i);
+       loopMethod(fd, blockSize, QUEUE_SIZE, NUMBER_OF_BLOCKS);
        close(fd);
     }
 
