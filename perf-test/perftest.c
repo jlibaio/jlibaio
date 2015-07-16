@@ -71,7 +71,7 @@ void preAlloc(int fd, int blockSize, int blocks, int type)
     if (type == 0)
     {
        fprintf (stderr, "using fallocate..");
-       if (fallocate(fd, FALLOC_FL_ZERO_RANGE, 0, (off_t) (blocks * blockSize)))
+       if (fallocate(fd, 0, 0, (off_t) (blocks * blockSize)))
        {
            fprintf (stderr, "Can't use fallocate\n");
            exit(-1);
@@ -166,7 +166,7 @@ void loopMethod(int fd, int blockSize, int maxIO, int blocks)
     msec_t milliseconds = (end - start);
     clock_t clocks = (endClock - startClock);
 
-    fprintf (stderr, "...done in %ld clocks, %ld milliseconds\n", clocks, milliseconds);
+    fprintf (stderr, "...done in %ld clocks, %ld milliseconds\n", (long)clocks, (long)milliseconds);
 }
 
 int main(int argc, char *argv[])
